@@ -1,2 +1,2 @@
-# RL-SLib
-Reinforcement Learning Series data Library
+# QIRL
+Quantitive Investment with Reinforcement Learning
