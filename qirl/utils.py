@@ -1,5 +1,6 @@
 import numpy as np
 import pickle
+import torch
 
 def load_data(path):
     with open(path, 'rb') as f:
@@ -11,7 +12,7 @@ def store_data(path, data):
         pickle.dump(data, f)
 
 def softmax(x):
-    tmp = np.exp(x - np.max(x))
+    tmp = torch.exp(x - torch.max(x))
     return tmp / tmp.sum()
 
 def min_max_scaler(arr):
@@ -21,14 +22,11 @@ def min_max_scaler(arr):
     maximum = max(arr)
     return (arr - minimum) / (maximum - minimum)
 
-def preprocess(src_path, dst_path, training=True):
-    tmp = load_data(src_path)
+def preprocess(raw, training=True):
     new_data = []
-    for stock in tmp:
-        tmp = stock.swapaxes(0, 2)
-        tmp = tmp[3]
-        if training:
-            for idx in [0,1,4,5,7,8]:
-                tmp[:, idx] = min_max_scaler(tmp[:, idx])
-        new_data.append(tmp)
-    store_data(dst_path, new_data)
+    raw = raw.swapaxes(0, 1)
+    raw = raw[:, :, 3]
+    if training:
+        for idx in [0,1,4,5,7,8]:
+            raw[:, idx] = min_max_scaler(raw[:, idx])
+    return torch.tensor(raw, dtype=torch.float32)

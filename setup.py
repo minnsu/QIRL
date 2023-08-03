@@ -7,7 +7,7 @@ setup(
     author='minnsu',
     author_email='kms48491000@gmail.com',
     url='https://github.com/minnsu/QIRL.git',
-    install_requires=['tensorflow', 'keras', 'mpl_finance'],
+    install_requires=['torch'],
     packages=find_packages(exclude=[]),
     keywords=['Quantitive Investment', 'Reinforcement Learning', 'RL', 'QI', 'QIRL', 'qirl'],
     python_requires='>=3.8',

@@ -1,4 +1,3 @@
-qirl/legacy
+qirl/data
 qirl/__pycache__
-qirl/test
-qirl/test.py
+qirl/model

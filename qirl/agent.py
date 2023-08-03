@@ -1,69 +1,8 @@
 import numpy as np
-import tensorflow as tf
-import keras
+import torch
+import torch.nn.functional as F
 
 from utils import softmax
-
-class PolicyGradientAgent:
-
-    def __init__(self, environment, model, optimizer, loss_fn, discount_factor=0.95):
-        self.environment = environment
-        
-        self.model = model
-        self.optimizer = optimizer
-        self.loss_fn = loss_fn
-
-        self.discount_factor = discount_factor
-
-    def set_model(self, model):
-        self.model = model
-
-    def discount_rewards(self, rewards):
-        discounted = np.array(rewards)
-        for step in range(len(rewards) -2, -1, -1):
-            discounted[step] += discounted[step+1] * self.discount_factor
-        return discounted
-
-    def discount_normalize_rewards(self, all_rewards):
-        all_discounted = [self.discount_rewards(rewards) for rewards in all_rewards]
-
-        flattened = np.concatenate(all_discounted)
-        reward_mean = flattened.mean()
-        reward_std = flattened.std()
-
-        return [(discounted - reward_mean) / reward_std for discounted in all_discounted]
-
-    def run_one_episode(self):
-        done = False
-        next_state = self.environment.present()
-        while done is False:
-            target = np.array([0, 0, 0], dtype=np.float32)
-            target_idx = [0, 1, 2]
-            
-            with tf.GradientTape() as tape:
-                prediction = self.model(next_state)
-                action = (np.argmax(prediction), np.max(prediction))
-                next_state, reward, done, info = self.environment.step(action)
-                next_state = next_state[np.newaxis]
-                if reward > 0: # reward 크기에 따른 target 조정?
-                    target[action[0]] = 1
-                else: # reward가 음수면 다른 2가지 action에 0.5씩 제공
-                    del target_idx[action[0]]
-                    target[target_idx] = 0.5
-                loss = self.loss_fn(target.reshape(-1, 3), prediction)
-            grads = tape.gradient(loss, self.model.trainable_variables)
-            self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
-        print(info)
-
-    def train(self, n_episodes=1):
-        for i in range(n_episodes):
-            print('Episode {} ...'.format(i+1), end='', flush=True)
-            self.run_one_episode()
-            print('Done.')
-
-    def predict(self, state):
-        prediction = self.model(state[np.newaxis])
-        return (np.argmax(prediction), np.max(prediction))
 
 class DeepQNetworkAgent:
     def __init__(self, environment, model, optimizer, loss_fn, discount_factor=0.95, epsilon=0.5, n_actions=2):
@@ -80,6 +19,9 @@ class DeepQNetworkAgent:
         from collections import deque
         self.replay_buffer = deque(maxlen=10000)
     
+    def set_env(self, env):
+        self.environment = env
+
     def set_model(self, model):
         self.model = model
     
@@ -87,20 +29,31 @@ class DeepQNetworkAgent:
         if np.random.rand() < epsilon:
             return np.random.randint(self.n_actions) # action 종류
         else:
-            Q_values = self.model.predict(state[np.newaxis], verbose=0)
-            return np.argmax(Q_values[0])
+            Q_values = self.model(state)
+            return torch.argmax(Q_values)
 
     def sample_experiences(self, batch_size):
-        indices = np.random.randint(len(self.replay_buffer), size=batch_size)
+        indices = torch.randint(len(self.replay_buffer), (batch_size, ))
         batch = [self.replay_buffer[idx] for idx in indices]
-        states, actions, rewards, next_states, dones = [
-            np.array([experience[field_idx] for experience in batch])
-            for field_idx in range(5)]
+
+        states = torch.stack(tuple([experience[0].reshape(1, -1) for experience in batch]), dim=0)
+        actions = torch.tensor([experience[1] for experience in batch])
+        rewards = torch.stack(tuple([experience[2].reshape(1, -1) for experience in batch]), dim=0)
+        next_states = torch.stack(tuple([experience[3].reshape(1, -1) for experience in batch]), dim=0)
+        dones = torch.tensor([experience[4] for experience in batch])
+
+        # states, actions, rewards, next_states, dones = [
+        #     torch.stack(tuple([experience[field_idx].reshape(1, -1) for experience in batch]), dim=0)
+        #     for field_idx in range(5)]
         return states, actions, rewards, next_states, dones
 
     def play_one_step(self, state, epsilon):
         action = self.get_action(state, epsilon)
         next_state, reward, done, info = self.environment.step(action)
+
+        next_state = torch.tensor(next_state, dtype=torch.float32)
+        reward = torch.tensor(reward, dtype=torch.float32)
+
         self.replay_buffer.append((state, action, reward, next_state, done))
         return next_state, reward, done, info
 
@@ -108,18 +61,19 @@ class DeepQNetworkAgent:
         experiences = self.sample_experiences(batch_size)
         states, actions, rewards, next_states, dones = experiences
         # 최대 Q 가치 찾기
-        next_Q_values = self.model.predict(next_states)
-        max_next_Q_values = np.max(next_Q_values, axis=1)
-        target_Q_values = (rewards + (1-dones) * self.discount_factor * max_next_Q_values)
+        next_Q_values = self.model(next_states)
+        max_next_Q_values = next_Q_values.max(dim=2).values
+        target_Q_values = (rewards + ~dones * self.discount_factor * max_next_Q_values)
         target_Q_values = target_Q_values.reshape(-1, 1)
         
-        mask = tf.one_hot(actions, self.n_actions)
-        with tf.GradientTape() as tape:
-            all_Q_values = self.model(states)
-            Q_values = tf.reduce_sum(all_Q_values * mask, axis=1, keepdims=True)
-            loss = tf.reduce_mean(self.loss_fn(target_Q_values, Q_values))
-        grads = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+        mask = F.one_hot(actions, num_classes=self.n_actions)
+        
+        all_Q_values = self.model(states)
+        Q_values = torch.sum(all_Q_values * mask, (1, ), keepdims=True)
+        loss = torch.mean(self.loss_fn(target_Q_values, Q_values))
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
     def train(self, n_episodes=1, n_steps=None):
         for episode in range(n_episodes):
@@ -132,14 +86,96 @@ class DeepQNetworkAgent:
             if n_steps is None:
                 n_steps = len(self.environment.chart_data)
             for step in range(n_steps):
+                next_state = torch.tensor(next_state, dtype=torch.float32)
                 next_state, reward, done, info = self.play_one_step(next_state, epsilon)
                 if done:
                     print(info)
                     break
                 epsilon -= epsilon_delta
-            self.training_step(batch_size=n_steps)
+            self.training_step(batch_size=32)
             print('Done.')
     
     def predict(self, state):
-        Q_values = self.model(state[np.newaxis])
-        return np.argmax(Q_values)
+        Q_values = self.model(torch.tensor(state, dtype=torch.float32))
+        print(Q_values)
+        return torch.argmax(Q_values)
+
+class AdvancedAgent:
+    def __init__(self, env, model, optimizer, loss_fn, discount_factor=0.95, epsilon=0.5, n_outputs=2):
+        self.env = env
+        self.model = model
+        self.optimizer = optimizer
+        self.loss_fn = loss_fn
+
+        self.discount_factor = discount_factor
+        self.epsilon = epsilon
+        
+        self.n_outputs = 2
+
+    def set_model(self, model):
+        self.model = model
+    
+    def set_env(self, env):
+        self.env = env
+    
+    def get_action(self, state, epsilon=0):
+        if torch.rand(1) < epsilon:
+            return softmax(torch.rand(self.n_outputs)) # action 종류
+        else:
+            conf_pair = self.model(state)
+            return conf_pair
+    
+    def discount_rewards(self, rewards):
+        discounted = torch.tensor(rewards)
+        for step in range(len(rewards) -2, -1, -1):
+            discounted[step] += discounted[step+1] * self.discount_factor
+        return discounted
+
+    def discount_normalize_rewards(self, all_rewards):
+        all_discounted = [self.discount_rewards(rewards) for rewards in all_rewards]
+
+        flattened = np.concatenate(all_discounted)
+        reward_mean = float(flattened.mean())
+        reward_std = float(flattened.std())
+
+        return [(discounted - reward_mean) / reward_std for discounted in all_discounted]
+    
+    def run_one_episode(self, n_steps):
+        done = False
+        next_state = self.env.present()
+        
+        epsilon = self.epsilon
+        epsilon_delta = epsilon / n_steps
+        while done is False:
+            target = torch.tensor([0, 0], dtype=torch.float32)
+            prediction = self.get_action(next_state, epsilon)
+            confidence = max(prediction)
+            action = torch.argmax(prediction)
+            next_state, reward, done, info = self.env.step((action, confidence))
+
+            if reward > 0: # reward 크기에 따른 target 조정?
+                target[action] = 1
+            else:
+                target[1-action] = 1
+            
+            self.optimizer.zero_grad()
+            target = torch.tensor(target, dtype=torch.float32, requires_grad=True)
+            loss = self.loss_fn(prediction, target)
+            loss.backward()
+            self.optimizer.step()
+
+            epsilon -= epsilon_delta
+        return info
+
+    def train(self, n_episodes=1, n_steps=None):
+        if n_steps == None:
+            n_steps = len(self.env.chart_data)
+        for i in range(n_episodes):
+            print('Episode {} ...'.format(i+1), end='', flush=True)
+            info = self.run_one_episode(n_steps)
+            print('Done.')
+            print(info)
+
+    def predict(self, state):
+        prediction = self.model(torch.tensor(state, dtype=torch.float32))
+        return (int(torch.argmax(prediction)), float(torch.max(prediction)))
