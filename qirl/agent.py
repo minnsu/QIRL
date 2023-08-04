@@ -100,7 +100,7 @@ class DeepQNetworkAgent:
         print(Q_values)
         return torch.argmax(Q_values)
 
-class AdvancedAgent:
+class PolicyGradientAgent:
     def __init__(self, env, model, optimizer, loss_fn, discount_factor=0.95, epsilon=0.5, n_outputs=2):
         self.env = env
         self.model = model
@@ -179,3 +179,72 @@ class AdvancedAgent:
     def predict(self, state):
         prediction = self.model(torch.tensor(state, dtype=torch.float32))
         return (int(torch.argmax(prediction)), float(torch.max(prediction)))
+
+class ActorCriticAgent:
+    def __init__(self, env, policy_value_model, optimizer, loss_fn, discount_factor=0.99, exploration_rate=None, replay_len=None):
+        self.env = env
+        self.model = policy_value_model
+        self.optimizer = optimizer
+        self.loss_fn = loss_fn
+
+        self.discount_factor = discount_factor
+        self.exp_rate = exploration_rate
+
+        from collections import deque
+        if replay_len is None:
+            replay_len = self.env.length
+        self.replay = deque(maxlen=replay_len + 1)
+        self.rewards = []
+
+    def set_model(self, model):
+        self.model = model
+    
+    def set_env(self, env):
+        self.env = env
+
+    def get_action(self, state):
+        action_probs, Q_value = self.model(state)
+        action = torch.distributions.Categorical(action_probs).sample()
+        self.replay.append((action, Q_value))
+        return action.item()
+
+    def after_each_episode(self):
+        p_loss = []
+        v_loss = []
+
+        rewards = torch.tensor(self.rewards)
+        for step in range(len(rewards)-2, -1, -1):
+            rewards[step] += rewards[step+1] * self.discount_factor
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+
+        for (log_prob, Q_value), reward in zip(self.replay, rewards):
+            advantage = reward - Q_value.item()
+            p_loss.append(-log_prob * advantage)
+            v_loss.append(F.smooth_l1_loss(Q_value, reward))
+        
+        self.optimizer.zero_grad()
+        loss = torch.stack(p_loss).sum() + torch.stack(v_loss).sum()
+        loss.backward()
+        self.optimizer.step()
+
+        self.rewards.clear()
+        self.replay.clear()
+            
+    def run(self, n_episodes=1, n_steps=None, print_each_episode=False):
+        if n_steps is None:
+            n_steps = self.env.length
+        for episode in range(n_episodes):
+            print('Episode {} playing... '.format(episode+1), end='', flush=True)
+            state = self.env.present()
+            for step in range(n_steps):
+                action = self.get_action(state)
+                state, reward, done, info = self.env.step(action)
+                self.rewards.append(reward)
+                if done:
+                    if print_each_episode:
+                        print(info)
+                    break
+            print('done.')
+            print('Episode {} training... '.format(episode+1), end='', flush=True)
+            self.after_each_episode()
+            print('done.')
