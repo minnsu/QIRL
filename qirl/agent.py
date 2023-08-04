@@ -203,9 +203,10 @@ class ActorCriticAgent:
         self.env = env
 
     def get_action(self, state):
-        action_probs, Q_value = self.model(state)
-        action = torch.distributions.Categorical(action_probs).sample()
-        self.replay.append((action, Q_value))
+        action_probs, value = self.model(state)
+        tmp = torch.distributions.Categorical(action_probs)
+        action = tmp.sample()
+        self.replay.append((tmp.log_prob(action), value))
         return action.item()
 
     def after_each_episode(self):
@@ -217,14 +218,14 @@ class ActorCriticAgent:
             rewards[step] += rewards[step+1] * self.discount_factor
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
-        for (log_prob, Q_value), reward in zip(self.replay, rewards):
-            advantage = reward - Q_value.item()
+        for (log_prob, value), reward in zip(self.replay, rewards):
+            advantage = reward - value.item()
             p_loss.append(-log_prob * advantage)
-            v_loss.append(F.smooth_l1_loss(Q_value, reward))
+            v_loss.append(F.smooth_l1_loss(value, reward))
         
         self.optimizer.zero_grad()
         loss = torch.stack(p_loss).sum() + torch.stack(v_loss).sum()
-        loss.backward()
+        loss.mean().backward()
         self.optimizer.step()
 
         self.rewards.clear()

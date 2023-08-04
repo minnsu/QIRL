@@ -146,8 +146,8 @@ class PolicyGradientEnvironment:
 class ActorCriticEnvironment:
     tax = 0.002
     charge = 0.00015
-    
-    def __init__(self, chart_data, price_idx, reward_scaler=100):
+
+    def __init__(self, chart_data, price_idx, reward_scaler=100, charge=True):
         self.chart_data = chart_data
         self.price_idx = price_idx
         self.length = len(self.chart_data)
@@ -158,7 +158,10 @@ class ActorCriticEnvironment:
         self.state = self.chart_data[self.idx]
         
         self.reward_scaler = reward_scaler
-        pass
+        
+        if ~charge:
+            self.tax = 0
+            self.charge = 0
 
     def reset(self):
         self.records = [[0, 0., 0.], [0, 0., 0.]] # [Buys, profit, loss], [Sells, profit, loss]

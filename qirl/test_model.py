@@ -40,6 +40,6 @@ class ActorCriticModel(torch.nn.Module):
         x = F.relu(self.affine1(x))
         x = F.sigmoid(self.affine2(x))
         x = self.affine3(x)
-        act_prob = F.log_softmax(self.act_prob(x), dim=-1)
+        act_prob = F.softmax(self.act_prob(x), dim=-1)
         q_value = self.q_value(x)
         return act_prob, q_value
